@@ -84,6 +84,8 @@ Lưu ý: `contracts.py` và `make_fake.py` đã có trong repo — đọc trư�
   Mỗi lần chạy lưu kèm bản sao `config/default.yaml` vào `results/`.
   (Cần nhóm đồng ý) Chạy cấu hình nhất và nhì với 3 seed để đo nhiễu; báo cáo kèm độ dao động.
   Xong khi: `results/runs.csv` đủ 16 dòng kèm siêu tham số + seed.
+  Trạng thái: `rq1.py` xong, chạy trọn quy trình trên data_fake với `run_eval`/`log_run` TẠM. Hai giai đoạn: `--stage sweep` (ghi `results/rq1_runs.csv` + `rq1_best.json`) rồi `--stage test` (học lại train+valid, chặn chạy lần 2). Kiểm tra biên theo TỪNG scheme, chặn test nếu còn scheme có đỉnh ở biên; mở rộng bằng `--alphas` (không sửa config chung). Còn: `run_eval`/`log_run` thật của C, `data/splits` của A.
+  ⚠ Hỏi nhóm: điểm dừng khi mở rộng dải alpha (trên data_fake phải lên tới 2000 mới hết biên).
 - [ ] **10. Lưu mô hình tốt nhất (ngày 14)** — xuất `item_factors`, `user_factors` của cấu hình thắng ra `models/`.
   Lưu kèm danh sách `app_id` theo thứ tự `i_idx` đã dùng khi huấn luyện, để A kiểm tra khớp với `items.parquet` lúc nạp.
   Định dạng: hai mảng numpy + `.json` ghi thiết lập (factors, regularization, scheme, alpha, seed). Không pickle mô hình `implicit`.
