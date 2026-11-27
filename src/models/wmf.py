@@ -15,13 +15,17 @@ như không bị phạt.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import implicit
 import numpy as np
 import pandas as pd
 from implicit.als import AlternatingLeastSquares
 from scipy.sparse import csr_matrix
 from threadpoolctl import threadpool_limits
 
-from .base import BaseRecommender
+from .base import BaseRecommender, _app_ids_in_order, _check_saved_app_ids
 
 
 class WMF(BaseRecommender):
@@ -36,6 +40,9 @@ class WMF(BaseRecommender):
         self.iterations = iterations
         self.seed = seed
         self.model = None
+        # Trung vị confidence lúc huấn luyện: confidence mặc định cho fold_in,
+        # để vector người dùng mới cùng thang đo với vector đã học.
+        self._conf_median: float | None = None
 
     def _fit(self, train_df: pd.DataFrame, confidence: np.ndarray | None) -> None:
         """Huấn luyện bằng implicit.als.AlternatingLeastSquares.
@@ -96,6 +103,7 @@ class WMF(BaseRecommender):
                 use_gpu=False,  # CPU để kết quả lặp lại được giữa các máy
             )
             self.model.fit(C, show_progress=False)
+        self._conf_median = float(np.median(confidence))
 
     def _score_users(self, user_ids: np.ndarray) -> np.ndarray:
         """s(u,i) = x_u . y_i
@@ -110,10 +118,89 @@ class WMF(BaseRecommender):
 
             x_u = (Y^T C^u Y + lambda I)^-1 Y^T C^u p_u
 
-        Trong implicit có thể gọi model.recommend(..., recalculate_user=True).
+        confidence: số hoặc mảng cùng độ dài liked_i_idx. None -> trung vị
+        confidence lúc huấn luyện (người dùng demo chỉ chọn game, không có giờ chơi).
+        Điểm cho mọi game: vector @ item_factors.T (tự loại liked_i_idx).
         """
-        raise NotImplementedError
+        if self.model is None:
+            raise RuntimeError("phải gọi fit trước fold_in")
+        c = self._conf_median if confidence is None else confidence
+        return fold_in_vector(self.model.item_factors, self.regularization, liked_i_idx, c)
 
-    def save(self, path: str) -> None:
-        """Xuất item_factors và user_factors cho demo. Hạn: ngày 14."""
-        raise NotImplementedError
+    def save(self, path: str, items: pd.DataFrame, *, scheme: str, alpha: float,
+             cap_hours: float | None = None) -> None:
+        """Xuất item_factors và user_factors cho demo. Hạn: ngày 14 (PLANB mục 10).
+
+        Ghi HAI file cạnh nhau (đuôi trong ``path`` bị thay):
+          <path>.npz   user_factors, item_factors (np.savez, KHÔNG pickle)
+          <path>.json  thiết lập + conf_median + app_ids theo thứ tự i_idx
+
+        scheme / alpha bắt buộc: WMF không tự biết confidence được tính thế nào.
+        A nạp bằng load_factors để phát hiện khi items.parquet đã bị sinh lại.
+        """
+        if self.model is None:
+            raise RuntimeError("phải gọi fit trước save")
+        app_ids = _app_ids_in_order(items, self.n_items)
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            p.with_suffix(".npz"),
+            user_factors=np.asarray(self.model.user_factors, dtype=np.float32),
+            item_factors=np.asarray(self.model.item_factors, dtype=np.float32),
+        )
+        meta = {
+            "model": self.name,
+            "factors": self.factors,
+            "regularization": self.regularization,
+            "iterations": self.iterations,
+            "seed": self.seed,
+            "scheme": scheme,
+            "alpha": float(alpha),
+            "cap_hours": cap_hours,
+            "conf_median": self._conf_median,
+            "n_users": self.n_users,
+            "n_items": self.n_items,
+            "implicit_version": implicit.__version__,
+            "app_ids": app_ids.tolist(),
+        }
+        p.with_suffix(".json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def fold_in_vector(item_factors: np.ndarray, regularization: float,
+                   liked_i_idx, confidence) -> np.ndarray:
+    """Vector người dùng mới từ item_factors — KHÔNG cần đối tượng WMF.
+
+    Dựng phương trình giống bộ giải của implicit 0.7.3 (user_linear_equation):
+        A = Y^T Y + lambda I + sum_i (c_i - 1) y_i y_i^T
+        b = sum_i c_i y_i
+    rồi giải x = A^-1 b. Dùng được sau load_factors (lấy regularization và
+    conf_median trong meta).
+    """
+    Y = np.asarray(item_factors, dtype=np.float64)
+    liked = np.asarray(liked_i_idx, dtype=np.int64).ravel()
+    if liked.size == 0:
+        raise ValueError("liked_i_idx rỗng: người dùng phải chọn ít nhất một game")
+    if len(np.unique(liked)) != len(liked):
+        raise ValueError("liked_i_idx có game trùng")
+    if liked.min() < 0 or liked.max() >= len(Y):
+        raise ValueError(f"liked_i_idx phải trong [0, {len(Y)})")
+    c = np.broadcast_to(np.asarray(confidence, dtype=np.float64), liked.shape)
+    if (c < 1).any():
+        raise ValueError("confidence phải >= 1")
+    Yl = Y[liked]
+    A = Y.T @ Y + regularization * np.eye(Y.shape[1]) + (Yl.T * (c - 1)) @ Yl
+    b = Yl.T @ c
+    return np.linalg.solve(A, b).astype(np.float32)
+
+
+def load_factors(path: str, items: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Nạp file do WMF.save xuất ra, KIỂM TRA khớp items. Trả về
+    (user_factors, item_factors, meta).
+
+    Báo lỗi nếu items.parquet hiện tại khác thứ tự app_id lúc huấn luyện.
+    """
+    p = Path(path)
+    meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
+    _check_saved_app_ids(meta["app_ids"], items, meta["n_items"], p.name, "factors của WMF")
+    with np.load(p.with_suffix(".npz"), allow_pickle=False) as f:
+        return f["user_factors"], f["item_factors"], meta
