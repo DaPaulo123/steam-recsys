@@ -87,3 +87,37 @@ class BaseRecommender:
         order = np.argsort(-part_scores, axis=1, kind="stable")
         top = np.take_along_axis(part, order, axis=1)
         return top.astype(np.int32)
+
+
+# --------------------------------------------------------------------------
+# Dùng chung khi xuất / nạp file cho demo (knn.py, wmf.py)
+# --------------------------------------------------------------------------
+
+def _app_ids_in_order(items: pd.DataFrame, n_items: int) -> np.ndarray:
+    """app_id sắp theo i_idx. Báo lỗi nếu i_idx không phủ đúng 0..n_items-1."""
+    idx = items["i_idx"].to_numpy()
+    if len(idx) != n_items or not np.array_equal(np.sort(idx), np.arange(n_items)):
+        raise ValueError(
+            f"items có {len(idx)} dòng / i_idx không phủ đúng 0..{n_items - 1}: "
+            "items.parquet không khớp với mô hình"
+        )
+    return items.sort_values("i_idx")["app_id"].to_numpy(dtype=np.int64)
+
+
+def _check_saved_app_ids(saved, items: pd.DataFrame, n_items: int, fname: str, what: str) -> None:
+    """So app_id đã lưu lúc huấn luyện với items.parquet hiện tại.
+
+    Lệch nghĩa là A đã chạy lại preprocess -> i_idx trỏ tới game khác -> B phải
+    xuất lại ``what`` (xem PLANB.md).
+    """
+    saved = np.asarray(saved, dtype=np.int64)
+    try:
+        current = _app_ids_in_order(items, n_items)
+    except ValueError as e:
+        raise ValueError(f"{fname}: {e}. B cần xuất lại {what}.") from e
+    if not np.array_equal(saved, current):
+        n_diff = int((saved != current).sum())
+        raise ValueError(
+            f"{fname}: {n_diff} i_idx trỏ tới game khác so với lúc huấn luyện "
+            f"(items.parquet đã bị sinh lại). B cần xuất lại {what}."
+        )

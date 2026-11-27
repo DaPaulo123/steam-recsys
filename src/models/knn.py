@@ -19,7 +19,7 @@ import pandas as pd
 from implicit.nearest_neighbours import CosineRecommender
 from scipy.sparse import csr_matrix, load_npz, save_npz
 
-from .base import BaseRecommender
+from .base import BaseRecommender, _app_ids_in_order, _check_saved_app_ids
 
 
 class ItemKNN(BaseRecommender):
@@ -114,17 +114,6 @@ class ItemKNN(BaseRecommender):
         return pairs.reset_index(drop=True)
 
 
-def _app_ids_in_order(items: pd.DataFrame, n_items: int) -> np.ndarray:
-    """app_id sắp theo i_idx. Báo lỗi nếu i_idx không phủ đúng 0..n_items-1."""
-    idx = items["i_idx"].to_numpy()
-    if len(idx) != n_items or not np.array_equal(np.sort(idx), np.arange(n_items)):
-        raise ValueError(
-            f"items có {len(idx)} dòng / i_idx không phủ đúng 0..{n_items - 1}: "
-            "items.parquet không khớp với mô hình"
-        )
-    return items.sort_values("i_idx")["app_id"].to_numpy(dtype=np.int64)
-
-
 def load_similarity(path: str, items: pd.DataFrame) -> csr_matrix:
     """Nạp ma trận do ItemKNN.export_similarity xuất ra, KIỂM TRA khớp items.
 
@@ -133,15 +122,5 @@ def load_similarity(path: str, items: pd.DataFrame) -> csr_matrix:
     """
     p = Path(path)
     meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
-    saved = np.asarray(meta["app_ids"], dtype=np.int64)
-    try:
-        current = _app_ids_in_order(items, meta["n_items"])
-    except ValueError as e:
-        raise ValueError(f"{p.name}: {e}. B cần xuất lại ma trận tương đồng.") from e
-    if not np.array_equal(saved, current):
-        n_diff = int((saved != current).sum())
-        raise ValueError(
-            f"{p.name}: {n_diff} i_idx trỏ tới game khác so với lúc huấn luyện "
-            "(items.parquet đã bị sinh lại). B cần xuất lại ma trận tương đồng."
-        )
+    _check_saved_app_ids(meta["app_ids"], items, meta["n_items"], p.name, "ma trận tương đồng")
     return load_npz(p.with_suffix(".npz")).tocsr()
