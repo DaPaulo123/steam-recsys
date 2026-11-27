@@ -89,6 +89,7 @@ Lưu ý: `contracts.py` và `make_fake.py` đã có trong repo — đọc trư�
   Định dạng: hai mảng numpy + `.json` ghi thiết lập (factors, regularization, scheme, alpha, seed). Không pickle mô hình `implicit`.
   ⚠ Chốt với A: demo dùng ItemKNN cho người dùng mới, ALS cho người dùng cũ?
   Xong khi: A nạp được và sinh gợi ý không cần huấn luyện lại.
+  Trạng thái: code xong, kiểm tra trên data_fake. `WMF.save(path, items, scheme=, alpha=)` → `.npz` + `.json`; A nạp bằng `load_factors(path, items)`. Người dùng mới (nếu A muốn dùng ALS): `fold_in_vector(item_factors, meta["regularization"], liked, meta["conf_median"])` — khớp 100% top-10 với `recalculate_user` của implicit. Còn: chạy với cấu hình thắng RQ1 (ngày 14).
 - [ ] **11. Ngày 14 (họp):** chốt cấu hình thắng RQ1 + quyết định dứt khoát có làm RQ2 không.
 
 ## Giai đoạn 3 — Tuần 3–4
